@@ -1,0 +1,20 @@
+Setup complete:
+- E:\Claude Projects\quant_ict_trader
+- Python 3.12.7, uv 0.11.7, Claude Code 2.1.119
+- All libraries installed including MetaTrader5
+- Git initialized, .venv active
+- Next: build strategies/market_structure.py
+- ICT: EURUSD, swing detection, BOS, CHoCH, Order Blocks
+- Data source: yfinance (later MT5)
+- Backtest: vectorbt
+
+I am building a professional ICT algo trading system in Python.
+Repo: https://github.com/kabilanpalanic-code/quant_ict_trader
+Stack: Python 3.12, uv, vectorbt, yfinance, MetaTrader5, plotly
+Trading: EURUSD, 1H/4H, Price Action + ICT concepts
+Task: build strategies/market_structure.py
+- Swing high/low detection
+- BOS and CHoCH identification  
+- Order Block marking
+- Interactive Plotly chart output
+Act as my Claude Expert and Algo Expert mentor.
