@@ -57,8 +57,15 @@ def plot_signal(
     x0 = view.index[0]
     x1 = view.index[-1]
 
-    # Entry line
-    fig.add_shape(type="line", x0=x0, x1=x1,
+    # Entry bar timestamp — lines start here
+    entry_ts = signal.timestamp
+
+    # Entry line — full width with different opacity before/after entry
+    fig.add_shape(type="line", x0=x0, x1=entry_ts,
+        y0=signal.entry, y1=signal.entry,
+        line=dict(color=colour, width=1, dash="dot"),
+        opacity=0.3)
+    fig.add_shape(type="line", x0=entry_ts, x1=x1,
         y0=signal.entry, y1=signal.entry,
         line=dict(color=colour, width=2))
     fig.add_annotation(x=x1, y=signal.entry,
@@ -67,35 +74,35 @@ def plot_signal(
         showarrow=False, xanchor="left",
         bgcolor="rgba(15,17,23,0.8)", borderpad=3)
 
-    # SL line
-    fig.add_shape(type="line", x0=x0, x1=x1,
+    # SL line — only from entry forward
+    fig.add_shape(type="line", x0=entry_ts, x1=x1,
         y0=signal.sl, y1=signal.sl,
         line=dict(color="#FC5C65", width=1.5, dash="dash"))
-    fig.add_annotation(x=x1, y=signal.sl,
-        text=f"  SL {signal.sl:.5f} ({signal.sl_pips:.0f} pips)",
-        font=dict(size=11, color="#FC5C65"),
-        showarrow=False, xanchor="left",
-        bgcolor="rgba(15,17,23,0.8)", borderpad=3)
+    fig.add_annotation(x=entry_ts, y=signal.sl,
+        text=f"SL {signal.sl:.5f} ({signal.sl_pips:.0f}p)",
+        font=dict(size=10, color="#FC5C65"),
+        showarrow=False, xanchor="left", yanchor="top",
+        bgcolor="rgba(15,17,23,0.8)", borderpad=2)
 
-    # TP1 line
-    fig.add_shape(type="line", x0=x0, x1=x1,
+    # TP1 line — only from entry forward
+    fig.add_shape(type="line", x0=entry_ts, x1=x1,
         y0=signal.tp1, y1=signal.tp1,
         line=dict(color="#26DE81", width=1.5, dash="dash"))
-    fig.add_annotation(x=x1, y=signal.tp1,
-        text=f"  TP1 {signal.tp1:.5f} ({signal.rr_tp1:.1f}R)",
-        font=dict(size=11, color="#26DE81"),
-        showarrow=False, xanchor="left",
-        bgcolor="rgba(15,17,23,0.8)", borderpad=3)
+    fig.add_annotation(x=entry_ts, y=signal.tp1,
+        text=f"TP1 {signal.tp1:.5f} ({signal.rr_tp1:.1f}R)",
+        font=dict(size=10, color="#26DE81"),
+        showarrow=False, xanchor="left", yanchor="bottom",
+        bgcolor="rgba(15,17,23,0.8)", borderpad=2)
 
-    # TP2 line
-    fig.add_shape(type="line", x0=x0, x1=x1,
+    # TP2 line — only from entry forward
+    fig.add_shape(type="line", x0=entry_ts, x1=x1,
         y0=signal.tp2, y1=signal.tp2,
         line=dict(color="#A8FF78", width=2, dash="dash"))
-    fig.add_annotation(x=x1, y=signal.tp2,
-        text=f"  TP2 {signal.tp2:.5f} ({signal.rr_tp2:.1f}R)",
-        font=dict(size=11, color="#A8FF78"),
-        showarrow=False, xanchor="left",
-        bgcolor="rgba(15,17,23,0.8)", borderpad=3)
+    fig.add_annotation(x=entry_ts, y=signal.tp2,
+        text=f"TP2 {signal.tp2:.5f} ({signal.rr_tp2:.1f}R)",
+        font=dict(size=10, color="#A8FF78"),
+        showarrow=False, xanchor="left", yanchor="bottom",
+        bgcolor="rgba(15,17,23,0.8)", borderpad=2)
 
     # Signal marker
     fig.add_trace(go.Scatter(

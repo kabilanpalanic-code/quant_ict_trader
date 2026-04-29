@@ -34,6 +34,7 @@ sys.path.insert(0, str(ROOT))
 from strategies.entry_model import EntryModel, TradeSignal
 from strategies.market_structure import MarketStructure
 from strategies.fvg import FairValueGap
+from strategies.liquidity import Liquidity
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -262,9 +263,9 @@ class Backtest:
                     self.equity_curve.append(self.balance)
 
             # Check signal expiry — expire after N bars not hours
-            expiry_bars = self.signal_expiry_h * 1  # 1 bar = 1 hour on 1H
+            expiry_bars = self.signal_expiry_h * 24  # e.g. 4 * 24 = 96, increase to 200
             for trade in open_trades[:]:
-                if trade.bars_held >= expiry_bars * 24:  # 4h * 24 = 96 bars
+                if trade.bars_held >= 200:
                     trade.result    = "EXPIRED"
                     trade.exit_bar  = i
                     trade.exit_time = current_bar
@@ -317,13 +318,30 @@ class Backtest:
                     if not sl_candidates: continue
                     swing_sl = max(sl_candidates) + buf
 
-                # Find FVG entry zones
+                # Find FVG entry zones — only where price is AT or near the zone
                 bt_signals = []
+                recent_bars = df_1h_slice.iloc[-24:]  # last 24 bars (1 day)
+
                 for f in fvg.unfilled():
                     if direction == "long" and f.kind == "bullish":
                         entry = f.midpoint
+                        # Price must have touched the FVG zone in recent bars
+                        price_reached = (recent_bars["low"] <= f.top).any() and \
+                                        (recent_bars["low"] >= f.bottom * 0.999).any()
+                        # Or current price is within 10 pips of the FVG
+                        near_zone = abs(current_price - entry) <= 0.0010
+                        if not (price_reached or near_zone):
+                            continue
+
                     elif direction == "short" and f.kind == "bearish":
                         entry = f.midpoint
+                        # Price must have touched the FVG zone in recent bars
+                        price_reached = (recent_bars["high"] >= f.bottom).any() and \
+                                        (recent_bars["high"] <= f.top * 1.001).any()
+                        # Or current price is within 10 pips of the FVG
+                        near_zone = abs(current_price - entry) <= 0.0010
+                        if not (price_reached or near_zone):
+                            continue
                     else:
                         continue
 
@@ -331,21 +349,72 @@ class Backtest:
                     sl_pips = sl_dist / 0.0001
                     if sl_pips < 15: continue
 
-                    tp1 = entry + sl_dist * self.tp1_rr if direction == "long" else entry - sl_dist * self.tp1_rr
-                    tp2 = entry + sl_dist * self.tp2_rr if direction == "long" else entry - sl_dist * self.tp2_rr
-                    rr  = self.tp2_rr
-                    if rr < self.min_rr: continue
+                    # TP levels — OB first, then liquidity, then fixed RR fallback
+                    liq = Liquidity(df_1h_slice, self.swing_lookback)
+                    max_tp1_dist = sl_dist * 2.0   # TP1 max 2x SL distance
+                    max_tp2_dist = sl_dist * 3.0   # TP2 max 3x SL distance
+
+                    # Get opposing OBs for TP1
+                    obs = ms_ltf.order_blocks
+
+                    if direction == "long":
+                        # TP1 — nearest bearish OB above entry within 2x SL
+                        ob_tp1 = sorted([
+                            (ob.low + ob.high) / 2 for ob in obs
+                            if not ob.mitigated
+                            and ob.kind == "bearish"
+                            and ob.low > entry
+                            and ob.low - entry <= max_tp1_dist
+                        ])
+                        tp1 = ob_tp1[0] if ob_tp1 else entry + sl_dist * self.tp1_rr
+
+                        # TP2 — nearest EQH above TP1 within 3x SL
+                        liq_tp2 = sorted([
+                            eq.price for eq in liq.active_buyside()
+                            if eq.price > tp1
+                            and eq.price - entry <= max_tp2_dist
+                        ])
+                        tp2 = liq_tp2[0] if liq_tp2 else entry + sl_dist * self.tp2_rr
+
+                    else:  # short
+                        # TP1 — nearest bullish OB below entry within 2x SL
+                        ob_tp1 = sorted([
+                            (ob.low + ob.high) / 2 for ob in obs
+                            if not ob.mitigated
+                            and ob.kind == "bullish"
+                            and ob.high < entry
+                            and entry - ob.high <= max_tp1_dist
+                        ], reverse=True)
+                        tp1 = ob_tp1[0] if ob_tp1 else entry - sl_dist * self.tp1_rr
+
+                        # TP2 — nearest EQL below TP1 within 3x SL
+                        liq_tp2 = sorted([
+                            eq.price for eq in liq.active_sellside()
+                            if eq.price < tp1
+                            and entry - eq.price <= max_tp2_dist
+                        ], reverse=True)
+                        tp2 = liq_tp2[0] if liq_tp2 else entry - sl_dist * self.tp2_rr
+
+                    # Ensure TP1 and TP2 are at least 10 pips apart
+                    min_gap = 0.0010
+                    if abs(tp2 - tp1) < min_gap:
+                        tp2 = tp1 + min_gap if direction == "long" else tp1 - min_gap
+
+                    rr_tp1 = abs(tp1 - entry) / sl_dist if sl_dist > 0 else 0
+                    rr_tp2 = abs(tp2 - entry) / sl_dist if sl_dist > 0 else 0
+
+                    if rr_tp2 < self.min_rr: continue
 
                     risk_amt  = self.balance * self.risk_pct
                     pos_size  = round(risk_amt / (sl_pips * self.pip_value), 2)
                     if pos_size <= 0: continue
 
-                    bt_signals.append((entry, swing_sl, tp1, tp2, sl_pips, pos_size, risk_amt))
+                    bt_signals.append((entry, swing_sl, tp1, tp2, sl_pips, pos_size, risk_amt, rr_tp1, rr_tp2))
 
             except Exception as e:
                 continue
 
-            for (entry, sl, tp1, tp2, sl_pips, pos_size, risk_amt) in bt_signals:
+            for (entry, sl, tp1, tp2, sl_pips, pos_size, risk_amt, rr_tp1, rr_tp2) in bt_signals:
 
                 sig_key = f"{self.instrument}_{direction}_{entry:.5f}"
                 if sig_key in seen_signals:
@@ -368,8 +437,8 @@ class Backtest:
                     position_size=pos_size,
                     tp1_size=round(pos_size * self.tp1_close_pct, 2),
                     tp2_size=round(pos_size * (1 - self.tp1_close_pct), 2),
-                    rr_tp1=self.tp1_rr,
-                    rr_tp2=self.tp2_rr,
+                    rr_tp1=round(rr_tp1, 2),
+                    rr_tp2=round(rr_tp2, 2),
                     trend_source="HTF+LTF aligned",
                     entry_zone="FVG",
                     confirmation="Trend alignment",
