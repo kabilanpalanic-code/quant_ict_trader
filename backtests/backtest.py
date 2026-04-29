@@ -32,6 +32,8 @@ ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
 from strategies.entry_model import EntryModel, TradeSignal
+from strategies.market_structure import MarketStructure
+from strategies.fvg import FairValueGap
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -273,51 +275,120 @@ class Backtest:
             if (i - self.min_warmup_bars) % self.step_bars != 0:
                 continue
 
-            # Run entry model on current slice
+            # Simplified signal generation for backtesting
+            # Uses same logic as EntryModel but without strict confirmation requirement
             try:
-                model = EntryModel(
-                    df_high          = df_4h_slice,
-                    df_low           = df_1h_slice,
-                    instrument       = self.instrument,
-                    account_balance  = self.balance,
-                    risk_pct         = self.risk_pct,
-                    tp1_rr           = self.tp1_rr,
-                    tp2_rr           = self.tp2_rr,
-                    tp1_close_pct    = self.tp1_close_pct,
-                    sl_buffer_pips   = self.sl_buffer_pips,
-                    min_rr           = self.min_rr,
-                    swing_lookback   = self.swing_lookback,
-                    pip_value        = self.pip_value,
-                )
+                ms_htf = MarketStructure(df_4h_slice, self.swing_lookback)
+                ms_ltf = MarketStructure(df_1h_slice, self.swing_lookback)
+                fvg    = FairValueGap(df_1h_slice, 2.0)
+
+                # Get trends
+                def get_trend(ms):
+                    if not ms.structure_events: return 0
+                    k = ms.structure_events[-1].kind
+                    return 1 if "bull" in k else -1
+
+                htf_trend = get_trend(ms_htf)
+                ltf_trend = get_trend(ms_ltf)
+
+                # Debug first few
+                if i <= self.min_warmup_bars + self.step_bars * 3:
+                    print(f"  Bar {i} | {current_bar.date()} | htf:{htf_trend:+d} | ltf:{ltf_trend:+d} | fvgs:{len(fvg.unfilled())}")
+
+                # Trends must agree
+                if htf_trend == 0 or ltf_trend == 0 or htf_trend != ltf_trend:
+                    continue
+
+                direction = "long" if htf_trend == 1 else "short"
+                current_price = df_1h_slice["close"].iloc[-1]
+
+                # Get SL from recent swing points
+                recent_sh = sorted(ms_ltf.swing_highs, key=lambda s: s.index)[-5:]
+                recent_sl = sorted(ms_ltf.swing_lows,  key=lambda s: s.index)[-5:]
+                buf = self.sl_buffer_pips * 0.0001
+
+                if direction == "long":
+                    sl_candidates = [s.price for s in recent_sl if s.price < current_price]
+                    if not sl_candidates: continue
+                    swing_sl = min(sl_candidates) - buf
+                else:
+                    sl_candidates = [s.price for s in recent_sh if s.price > current_price]
+                    if not sl_candidates: continue
+                    swing_sl = max(sl_candidates) + buf
+
+                # Find FVG entry zones
+                bt_signals = []
+                for f in fvg.unfilled():
+                    if direction == "long" and f.kind == "bullish":
+                        entry = f.midpoint
+                    elif direction == "short" and f.kind == "bearish":
+                        entry = f.midpoint
+                    else:
+                        continue
+
+                    sl_dist = abs(entry - swing_sl)
+                    sl_pips = sl_dist / 0.0001
+                    if sl_pips < 15: continue
+
+                    tp1 = entry + sl_dist * self.tp1_rr if direction == "long" else entry - sl_dist * self.tp1_rr
+                    tp2 = entry + sl_dist * self.tp2_rr if direction == "long" else entry - sl_dist * self.tp2_rr
+                    rr  = self.tp2_rr
+                    if rr < self.min_rr: continue
+
+                    risk_amt  = self.balance * self.risk_pct
+                    pos_size  = round(risk_amt / (sl_pips * self.pip_value), 2)
+                    if pos_size <= 0: continue
+
+                    bt_signals.append((entry, swing_sl, tp1, tp2, sl_pips, pos_size, risk_amt))
+
             except Exception as e:
                 continue
 
-            # Debug — print first few model results
-            if i <= self.min_warmup_bars + self.step_bars * 3:
-                print(f"  Bar {i} | {current_bar.date()} | signals: {len(model.signals)} | htf: {model._get_htf_trend()} | ltf: {model._get_ltf_trend()}")
+            for (entry, sl, tp1, tp2, sl_pips, pos_size, risk_amt) in bt_signals:
 
-            for sig in model.signals:
-                sig_key = f"{sig.instrument}_{sig.direction}_{sig.entry:.5f}"
+                sig_key = f"{self.instrument}_{direction}_{entry:.5f}"
                 if sig_key in seen_signals:
                     continue
-                if len(open_trades) >= 2:   # max 2 open trades
+                if len(open_trades) >= 2:
                     continue
                 seen_signals.add(sig_key)
 
+                # Create dummy signal for BacktestTrade
+                from strategies.entry_model import TradeSignal
+                dummy_sig = TradeSignal(
+                    timestamp=current_bar,
+                    instrument=self.instrument,
+                    direction=direction,
+                    entry=entry, sl=sl, tp1=tp1, tp2=tp2,
+                    account_balance=self.balance,
+                    risk_pct=self.risk_pct,
+                    risk_amount=risk_amt,
+                    sl_pips=sl_pips,
+                    position_size=pos_size,
+                    tp1_size=round(pos_size * self.tp1_close_pct, 2),
+                    tp2_size=round(pos_size * (1 - self.tp1_close_pct), 2),
+                    rr_tp1=self.tp1_rr,
+                    rr_tp2=self.tp2_rr,
+                    trend_source="HTF+LTF aligned",
+                    entry_zone="FVG",
+                    confirmation="Trend alignment",
+                )
+
                 trade = BacktestTrade(
-                    signal        = sig,
+                    signal        = dummy_sig,
                     entry_bar     = i,
                     entry_time    = current_bar,
-                    entry_price   = sig.entry,
-                    direction     = sig.direction,
-                    sl            = sig.sl,
-                    tp1           = sig.tp1,
-                    tp2           = sig.tp2,
-                    sl_pips       = sig.sl_pips,
-                    position_size = sig.position_size,
-                    risk_amount   = sig.risk_amount,
+                    entry_price   = entry,
+                    direction     = direction,
+                    sl            = sl,
+                    tp1           = tp1,
+                    tp2           = tp2,
+                    sl_pips       = sl_pips,
+                    position_size = pos_size,
+                    risk_amount   = risk_amt,
                 )
                 open_trades.append(trade)
+                print(f"  ✅ Trade: {direction} @ {entry:.5f} | SL:{sl:.5f} | {current_bar.date()}")
 
         # Close any remaining open trades at last bar
         for trade in open_trades:
