@@ -176,38 +176,52 @@ class Backtest:
         tp1_rr: float = 1.0,
         tp2_rr: float = 2.0,
         tp1_close_pct: float = 0.5,
-        sl_buffer_pips: float = 3.0,
+        sl_buffer_pips: float = 2.0,
         min_rr: float = 1.5,
+        min_sl_pips: float = 5.0,
+        max_sl_pips: float = 50.0,
         swing_lookback: int = 5,
         signal_expiry_h: int = 4,
         min_warmup_bars: int = 100,
-        step_bars: int = 4,
+        step_bars: int = 1,
         pip_value: float | None = None,
+        htf_interval: str = "1h",
+        ltf_interval: str = "15m",
+        fvg_min_pips: float = 1.0,
     ):
-        self.instrument     = instrument.upper()
-        self.start          = start
-        self.end            = end or datetime.today().strftime("%Y-%m-%d")
+        self.instrument      = instrument.upper()
+        self.start           = start
+        self.end             = end or datetime.today().strftime("%Y-%m-%d")
         self.initial_balance = account_balance
-        self.balance        = account_balance
-        self.risk_pct       = risk_pct
-        self.tp1_rr         = tp1_rr
-        self.tp2_rr         = tp2_rr
-        self.tp1_close_pct  = tp1_close_pct
-        self.sl_buffer_pips = sl_buffer_pips
-        self.min_rr         = min_rr
-        self.swing_lookback = swing_lookback
+        self.balance         = account_balance
+        self.risk_pct        = risk_pct
+        self.tp1_rr          = tp1_rr
+        self.tp2_rr          = tp2_rr
+        self.tp1_close_pct   = tp1_close_pct
+        self.sl_buffer_pips  = sl_buffer_pips
+        self.min_rr          = min_rr
+        self.min_sl_pips     = min_sl_pips
+        self.max_sl_pips     = max_sl_pips
+        self.swing_lookback  = swing_lookback
         self.signal_expiry_h = signal_expiry_h
         self.min_warmup_bars = min_warmup_bars
-        self.step_bars      = step_bars
+        self.step_bars       = step_bars
+        self.htf_interval    = htf_interval
+        self.ltf_interval    = ltf_interval
+        self.fvg_min_pips    = fvg_min_pips
 
         inst = self.INSTRUMENTS.get(self.instrument, {})
-        self.ticker     = inst.get("ticker", f"{instrument}=X")
-        self.pip_value  = pip_value or inst.get("pip_value", 7.0)
+        self.ticker    = inst.get("ticker", f"{instrument}=X")
+        self.pip_value = pip_value or inst.get("pip_value", 7.0)
 
         self.trades: list[BacktestTrade] = []
         self.equity_curve: list[float] = []
         self.result: BacktestResult | None = None
 
+        self._df_ltf: pd.DataFrame | None = None
+        self._df_htf: pd.DataFrame | None = None
+
+        # keep old names as aliases for signal_viewer compatibility
         self._df_1h: pd.DataFrame | None = None
         self._df_4h: pd.DataFrame | None = None
 
@@ -216,15 +230,16 @@ class Backtest:
     def run(self) -> BacktestResult:
         """Run the full backtest. Returns BacktestResult."""
         print(f"\nBacktest: {self.instrument}  {self.start} → {self.end}")
+        print(f"Timeframes: HTF={self.htf_interval}  LTF={self.ltf_interval}")
         print("Downloading data...")
 
         self._download_data()
-        print(f"1H bars: {len(self._df_1h)}  4H bars: {len(self._df_4h)}")
+        print(f"LTF bars: {len(self._df_ltf)}  HTF bars: {len(self._df_htf)}")
 
         # Filter to backtest period
-        df_period = self._df_1h[
-            (self._df_1h.index >= pd.Timestamp(self.start, tz="UTC")) &
-            (self._df_1h.index <= pd.Timestamp(self.end,   tz="UTC"))
+        df_period = self._df_ltf[
+            (self._df_ltf.index >= pd.Timestamp(self.start, tz="UTC")) &
+            (self._df_ltf.index <= pd.Timestamp(self.end,   tz="UTC"))
         ]
 
         if len(df_period) < self.min_warmup_bars:
@@ -241,10 +256,10 @@ class Backtest:
             current_bar = df_period.index[i]
 
             # Slice data up to current bar — no future peeking
-            df_1h_slice = self._df_1h[self._df_1h.index <= current_bar]
-            df_4h_slice = self._df_4h[self._df_4h.index <= current_bar]
+            df_ltf_slice = self._df_ltf[self._df_ltf.index <= current_bar]
+            df_htf_slice = self._df_htf[self._df_htf.index <= current_bar]
 
-            if len(df_1h_slice) < self.min_warmup_bars:
+            if len(df_ltf_slice) < self.min_warmup_bars:
                 continue
 
             # Check open trades against current bar OHLC
@@ -278,13 +293,12 @@ class Backtest:
                 continue
 
             # Simplified signal generation for backtesting
-            # Uses same logic as EntryModel but without strict confirmation requirement
             try:
-                ms_htf = MarketStructure(df_4h_slice, self.swing_lookback)
-                ms_ltf = MarketStructure(df_1h_slice, self.swing_lookback)
-                fvg    = FairValueGap(df_1h_slice, 2.0)
+                ms_htf = MarketStructure(df_htf_slice, self.swing_lookback)
+                ms_ltf = MarketStructure(df_ltf_slice, self.swing_lookback)
+                fvg    = FairValueGap(df_ltf_slice, self.fvg_min_pips)
 
-                # Get trends
+                # Get trends — require BOS specifically, not just any structure event
                 def get_trend(ms):
                     if not ms.structure_events: return 0
                     k = ms.structure_events[-1].kind
@@ -297,12 +311,12 @@ class Backtest:
                 if i <= self.min_warmup_bars + self.step_bars * 3:
                     print(f"  Bar {i} | {current_bar.date()} | htf:{htf_trend:+d} | ltf:{ltf_trend:+d} | fvgs:{len(fvg.unfilled())}")
 
-                # Trends must agree
+                # Trends must agree — both must be same direction
                 if htf_trend == 0 or ltf_trend == 0 or htf_trend != ltf_trend:
                     continue
 
                 direction = "long" if htf_trend == 1 else "short"
-                current_price = df_1h_slice["close"].iloc[-1]
+                current_price = df_ltf_slice["close"].iloc[-1]
 
                 # Get SL from recent swing points
                 recent_sh = sorted(ms_ltf.swing_highs, key=lambda s: s.index)[-5:]
@@ -313,45 +327,53 @@ class Backtest:
                     sl_candidates = [s.price for s in recent_sl if s.price < current_price]
                     if not sl_candidates: continue
                     swing_sl = min(sl_candidates) - buf
+
+                    # Fix 3 — avoid entering within 20 pips of recent swing high
+                    # (avoids buying at tops)
+                    recent_high = max([s.price for s in recent_sh]) if recent_sh else 0
+                    if recent_high and (recent_high - current_price) < 0.0020:
+                        continue
+
                 else:
                     sl_candidates = [s.price for s in recent_sh if s.price > current_price]
                     if not sl_candidates: continue
                     swing_sl = max(sl_candidates) + buf
 
-                # Find FVG entry zones — only where price is AT or near the zone
+                    # Fix 3 — avoid entering within 20 pips of recent swing low
+                    # (avoids shorting at bottoms)
+                    recent_low = min([s.price for s in recent_sl]) if recent_sl else 0
+                    if recent_low and (current_price - recent_low) < 0.0020:
+                        continue
+
+                # Find FVG entry zones — price must have touched zone in last 8 bars
                 bt_signals = []
-                recent_bars = df_1h_slice.iloc[-24:]  # last 24 bars (1 day)
+                last_8 = df_ltf_slice.iloc[-8:]
 
                 for f in fvg.unfilled():
                     if direction == "long" and f.kind == "bullish":
                         entry = f.midpoint
-                        # Price must have touched the FVG zone in recent bars
-                        price_reached = (recent_bars["low"] <= f.top).any() and \
-                                        (recent_bars["low"] >= f.bottom * 0.999).any()
-                        # Or current price is within 10 pips of the FVG
-                        near_zone = abs(current_price - entry) <= 0.0010
-                        if not (price_reached or near_zone):
+                        touched = (last_8["low"] <= f.top).any() and \
+                                  (last_8["low"] >= f.bottom - 0.0003).any()
+                        if not touched:
                             continue
 
                     elif direction == "short" and f.kind == "bearish":
                         entry = f.midpoint
-                        # Price must have touched the FVG zone in recent bars
-                        price_reached = (recent_bars["high"] >= f.bottom).any() and \
-                                        (recent_bars["high"] <= f.top * 1.001).any()
-                        # Or current price is within 10 pips of the FVG
-                        near_zone = abs(current_price - entry) <= 0.0010
-                        if not (price_reached or near_zone):
+                        touched = (last_8["high"] >= f.bottom).any() and \
+                                  (last_8["high"] <= f.top + 0.0003).any()
+                        if not touched:
                             continue
                     else:
                         continue
 
                     sl_dist = abs(entry - swing_sl)
                     sl_pips = sl_dist / 0.0001
-                    if sl_pips < 15: continue
+                    if sl_pips < self.min_sl_pips: continue
+                    if sl_pips > self.max_sl_pips: continue
 
                     # TP levels — OB first, then liquidity, then fixed RR fallback
-                    liq = Liquidity(df_1h_slice, self.swing_lookback)
-                    max_tp1_dist = sl_dist * 2.0   # TP1 max 2x SL distance
+                    liq = Liquidity(df_ltf_slice, self.swing_lookback)
+                    max_tp1_dist = sl_dist * 2.0
                     max_tp2_dist = sl_dist * 3.0   # TP2 max 3x SL distance
 
                     # Get opposing OBs for TP1
@@ -366,7 +388,7 @@ class Backtest:
                             and ob.low > entry
                             and ob.low - entry <= max_tp1_dist
                         ])
-                        tp1 = ob_tp1[0] if ob_tp1 else entry + sl_dist * self.tp1_rr
+                        tp1 = ob_tp1[0] if ob_tp1 else entry + sl_dist * min(self.tp1_rr, 1.5)
 
                         # TP2 — nearest EQH above TP1 within 3x SL
                         liq_tp2 = sorted([
@@ -374,7 +396,7 @@ class Backtest:
                             if eq.price > tp1
                             and eq.price - entry <= max_tp2_dist
                         ])
-                        tp2 = liq_tp2[0] if liq_tp2 else entry + sl_dist * self.tp2_rr
+                        tp2 = liq_tp2[0] if liq_tp2 else entry + sl_dist * min(self.tp2_rr, 2.0)
 
                     else:  # short
                         # TP1 — nearest bullish OB below entry within 2x SL
@@ -385,7 +407,7 @@ class Backtest:
                             and ob.high < entry
                             and entry - ob.high <= max_tp1_dist
                         ], reverse=True)
-                        tp1 = ob_tp1[0] if ob_tp1 else entry - sl_dist * self.tp1_rr
+                        tp1 = ob_tp1[0] if ob_tp1 else entry - sl_dist * min(self.tp1_rr, 1.5)
 
                         # TP2 — nearest EQL below TP1 within 3x SL
                         liq_tp2 = sorted([
@@ -393,7 +415,7 @@ class Backtest:
                             if eq.price < tp1
                             and entry - eq.price <= max_tp2_dist
                         ], reverse=True)
-                        tp2 = liq_tp2[0] if liq_tp2 else entry - sl_dist * self.tp2_rr
+                        tp2 = liq_tp2[0] if liq_tp2 else entry - sl_dist * min(self.tp2_rr, 2.0)
 
                     # Ensure TP1 and TP2 are at least 10 pips apart
                     min_gap = 0.0010
@@ -598,7 +620,7 @@ class Backtest:
     # ── private ────────────────────────────────────────────────────────────────
 
     def _download_data(self) -> None:
-        """Download 1H and 4H data covering the backtest period + warmup."""
+        """Download HTF and LTF data."""
         def fetch(interval: str, period: str) -> pd.DataFrame:
             raw = yf.download(self.ticker, period=period,
                               interval=interval, auto_adjust=True, progress=False)
@@ -610,8 +632,16 @@ class Backtest:
             df.index = pd.to_datetime(df.index, utc=True)
             return df.dropna()
 
-        self._df_1h = fetch("1h",  "730d")   # max yfinance allows for 1H
-        self._df_4h = fetch("4h",  "730d")
+        # yfinance limits: 15m = 60d, 1h = 730d, 4h = 730d
+        ltf_period = "60d"  if self.ltf_interval == "15m" else "730d"
+        htf_period = "730d"
+
+        self._df_ltf = fetch(self.ltf_interval, ltf_period)
+        self._df_htf = fetch(self.htf_interval, htf_period)
+
+        # aliases for signal_viewer compatibility
+        self._df_1h = self._df_ltf
+        self._df_4h = self._df_htf
 
     def _check_trade_exit(
         self,
