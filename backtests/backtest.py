@@ -270,7 +270,7 @@ class Backtest:
                     self.trades.append(trade)
 
             # Only check for new signals every step_bars
-            if i % self.step_bars != 0:
+            if (i - self.min_warmup_bars) % self.step_bars != 0:
                 continue
 
             # Run entry model on current slice
@@ -289,11 +289,15 @@ class Backtest:
                     swing_lookback   = self.swing_lookback,
                     pip_value        = self.pip_value,
                 )
-            except Exception:
+            except Exception as e:
                 continue
 
+            # Debug — print first few model results
+            if i <= self.min_warmup_bars + self.step_bars * 3:
+                print(f"  Bar {i} | {current_bar.date()} | signals: {len(model.signals)} | htf: {model._get_htf_trend()} | ltf: {model._get_ltf_trend()}")
+
             for sig in model.signals:
-                sig_key = f"{sig.direction}_{sig.entry:.5f}_{current_bar.date()}"
+                sig_key = f"{sig.instrument}_{sig.direction}_{sig.entry:.5f}"
                 if sig_key in seen_signals:
                     continue
                 if len(open_trades) >= 2:   # max 2 open trades
