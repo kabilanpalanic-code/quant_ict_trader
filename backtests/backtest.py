@@ -252,6 +252,7 @@ class Backtest:
             bar_close = df_period["close"].iloc[i]
 
             for trade in open_trades[:]:
+                trade.bars_held = i - trade.entry_bar
                 self._check_trade_exit(trade, i, current_bar,
                                        bar_high, bar_low, bar_close)
                 if trade.result != "OPEN":
@@ -260,10 +261,10 @@ class Backtest:
                     self.balance += trade.pnl
                     self.equity_curve.append(self.balance)
 
-            # Check signal expiry
+            # Check signal expiry — expire after N bars not hours
+            expiry_bars = self.signal_expiry_h * 1  # 1 bar = 1 hour on 1H
             for trade in open_trades[:]:
-                expiry = trade.entry_time + pd.Timedelta(hours=self.signal_expiry_h)
-                if current_bar > expiry:
+                if trade.bars_held >= expiry_bars * 24:  # 4h * 24 = 96 bars
                     trade.result    = "EXPIRED"
                     trade.exit_bar  = i
                     trade.exit_time = current_bar
