@@ -513,30 +513,31 @@ class StopHuntModel:
                 direction = "long" if sweep_dir == "low" else "short"
                 entry     = bpr.midpoint
 
-                # SL = swing high/low formed AFTER CHoCH + buffer
-                # This is the last significant price level — if broken, setup is invalid
-                after_choch = after_asian.iloc[choch_bar:]
+                # SL = nearest swing high/low after CHoCH within 20 bars
+                after_choch = after_asian.iloc[choch_bar:choch_bar + 20]
                 buf = self.sl_buffer
 
                 if direction == "long":
-                    # Find lowest swing low after CHoCH
-                    swing_lows = []
+                    # Nearest swing low after CHoCH
                     lows = after_choch["low"].values
+                    swing_lows = []
                     for k in range(self.swing_bars, len(lows) - self.swing_bars):
                         window = lows[k - self.swing_bars:k + self.swing_bars + 1]
                         if lows[k] == window.min():
                             swing_lows.append(lows[k])
-                    sl = (min(swing_lows) - buf) if swing_lows else (sweep_candle["low"] - buf)
+                    # Use most recent swing low, fallback to min of window
+                    sl = (swing_lows[-1] - buf) if swing_lows else (after_choch["low"].min() - buf)
                     tp = ar.high
                 else:
-                    # Find highest swing high after CHoCH
-                    swing_highs = []
+                    # Nearest swing high after CHoCH
                     highs = after_choch["high"].values
+                    swing_highs = []
                     for k in range(self.swing_bars, len(highs) - self.swing_bars):
                         window = highs[k - self.swing_bars:k + self.swing_bars + 1]
                         if highs[k] == window.max():
                             swing_highs.append(highs[k])
-                    sl = (max(swing_highs) + buf) if swing_highs else (sweep_candle["high"] + buf)
+                    # Use most recent swing high, fallback to max of window
+                    sl = (swing_highs[-1] + buf) if swing_highs else (after_choch["high"].max() + buf)
                     tp = ar.low
 
                 sl_pips = abs(entry - sl) / 0.0001
