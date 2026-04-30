@@ -533,19 +533,22 @@ class StopHuntModel:
                         window = lows[k - self.swing_bars:k + self.swing_bars + 1]
                         if lows[k] == window.min():
                             swing_lows.append(lows[k])
-                    # Use most recent swing low, fallback to min of window
                     sl = (swing_lows[-1] - buf) if swing_lows else (after_choch["low"].min() - buf)
+                    # Fallback to sweep candle if SL too close to entry
+                    if abs(entry - sl) / 0.0001 < 5:
+                        sl = after_asian.iloc[sweep_bar]["low"] - buf
                     tp = ar.high
                 else:
-                    # Nearest swing high after CHoCH
                     highs = after_choch["high"].values
                     swing_highs = []
                     for k in range(self.swing_bars, len(highs) - self.swing_bars):
                         window = highs[k - self.swing_bars:k + self.swing_bars + 1]
                         if highs[k] == window.max():
                             swing_highs.append(highs[k])
-                    # Use most recent swing high, fallback to max of window
                     sl = (swing_highs[-1] + buf) if swing_highs else (after_choch["high"].max() + buf)
+                    # Fallback to sweep candle if SL too close to entry
+                    if abs(entry - sl) / 0.0001 < 5:
+                        sl = after_asian.iloc[sweep_bar]["high"] + buf
                     tp = ar.low
 
                 sl_pips = abs(entry - sl) / 0.0001
