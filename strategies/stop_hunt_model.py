@@ -364,25 +364,32 @@ class StopHuntModel:
             return
 
         # ── Step 3: Find entry zone (BPR or FVG) in correct location ──────────
-        # SHORT: zone must be ABOVE Asian High
-        # LONG:  zone must be BELOW Asian Low
+        # SHORT: BEARISH FVG/BPR ABOVE Asian High
+        # LONG:  BULLISH FVG/BPR BELOW Asian Low
         zone       = None
         zone_type  = None
         min_gap    = self.min_zone_pips * 0.0001
 
         # Try BPR first (stronger signal)
+        # BPR must contain the correct FVG direction
         bprs = detect_bprs(after, min_gap)
         for bpr in bprs:
-            if sweep_dir == "high" and bpr.midpoint >= ar.high:
-                zone      = (bpr.bottom, bpr.top)
-                zone_type = "BPR"
-                break
-            elif sweep_dir == "low" and bpr.midpoint <= ar.low:
-                zone      = (bpr.bottom, bpr.top)
-                zone_type = "BPR"
-                break
+            if sweep_dir == "high":
+                # SHORT → BPR must be above Asian High AND contain bearish FVG
+                if (bpr.midpoint >= ar.high and
+                        bpr.bearish_fvg.top >= ar.high):
+                    zone      = (bpr.bottom, bpr.top)
+                    zone_type = "BPR"
+                    break
+            elif sweep_dir == "low":
+                # LONG → BPR must be below Asian Low AND contain bullish FVG
+                if (bpr.midpoint <= ar.low and
+                        bpr.bullish_fvg.bottom <= ar.low):
+                    zone      = (bpr.bottom, bpr.top)
+                    zone_type = "BPR"
+                    break
 
-        # Fallback to FVG if no BPR found
+        # Fallback to single FVG if no valid BPR
         if zone is None:
             fvgs = detect_fvgs(after, min_gap)
             for fvg in fvgs:
