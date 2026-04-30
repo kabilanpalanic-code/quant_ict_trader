@@ -122,14 +122,16 @@ class StopHuntModel:
         min_rr: float = 1.0,
         min_bpr_pips: float = 1.0,
         swing_bars: int = 3,
+        min_asian_pips: float = 10.0,
     ):
         self._validate(df)
-        self.df         = df.copy()
-        self.instrument = instrument
-        self.sl_buffer  = sl_buffer_pips * 0.0001
-        self.min_rr     = min_rr
-        self.min_bpr_pips = min_bpr_pips
-        self.swing_bars = swing_bars
+        self.df            = df.copy()
+        self.instrument    = instrument
+        self.sl_buffer     = sl_buffer_pips * 0.0001
+        self.min_rr        = min_rr
+        self.min_bpr_pips  = min_bpr_pips
+        self.swing_bars    = swing_bars
+        self.min_asian_pips = min_asian_pips
 
         self.asian_ranges: list[AsianRange] = []
         self.signals:      list[StopHuntSignal] = []
@@ -425,16 +427,22 @@ class StopHuntModel:
     def _process_range(self, ar: AsianRange) -> None:
         df = self.df
 
-        # Search window: Asian close to 10 AM NY NEXT DAY (end of NY Morning session)
-        # Asian ends 10 PM NY → next day 10 AM NY = 12 hours window
+        # Skip if Asian range too small — noise will sweep it
+        if ar.size_pips < self.min_asian_pips:
+            return
+
+        # Search window: AFTER Asian KZ ends (10PM NY) to NY Morning end (10AM NY next day)
+        # Entry strictly forbidden during Asian Kill Zone (8PM-10PM NY)
+        import datetime
         ar_end_ny = ar.end_time.astimezone(NY_TZ)
-        next_day  = ar_end_ny.date() + pd.Timedelta(days=1)
+        next_day  = ar_end_ny.date() + datetime.timedelta(days=1)
         ny_morning_end = pd.Timestamp(
             year=next_day.year, month=next_day.month, day=next_day.day,
             hour=10, minute=0, tzinfo=NY_TZ
         )
         ny_morning_end_utc = ny_morning_end.tz_convert("UTC")
 
+        # Only bars strictly AFTER Asian KZ end
         after_asian = df[
             (df.index > ar.end_time) &
             (df.index <= ny_morning_end_utc)
