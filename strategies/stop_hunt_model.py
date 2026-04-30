@@ -488,10 +488,10 @@ class StopHuntModel:
                         choch_bar   = i
                 continue
 
-            # Step 3: BPR — run ONCE on slice after CHoCH (max 50 bars)
+            # Step 3: BPR — detect on full window after Asian close
             if choch_found:
-                end_bar   = min(choch_bar + 50, len(after_asian))
-                df_window = after_asian.iloc[choch_bar:end_bar]
+                end_bar   = min(50, len(after_asian))
+                df_window = after_asian.iloc[:end_bar]
                 bprs      = detect_bprs(df_window, self.min_bpr_pips)
 
                 current_price = row["close"]
