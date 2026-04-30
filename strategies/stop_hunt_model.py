@@ -513,14 +513,30 @@ class StopHuntModel:
                 direction = "long" if sweep_dir == "low" else "short"
                 entry     = bpr.midpoint
 
-                # SL = beyond the FULL sweep candle wick + buffer
-                # Use the extreme wick of the sweep candle, not just close
-                sweep_candle = after_asian.iloc[sweep_bar]
+                # SL = swing high/low formed AFTER CHoCH + buffer
+                # This is the last significant price level — if broken, setup is invalid
+                after_choch = after_asian.iloc[choch_bar:]
+                buf = self.sl_buffer
+
                 if direction == "long":
-                    sl = sweep_candle["low"] - self.sl_buffer   # below sweep wick
+                    # Find lowest swing low after CHoCH
+                    swing_lows = []
+                    lows = after_choch["low"].values
+                    for k in range(self.swing_bars, len(lows) - self.swing_bars):
+                        window = lows[k - self.swing_bars:k + self.swing_bars + 1]
+                        if lows[k] == window.min():
+                            swing_lows.append(lows[k])
+                    sl = (min(swing_lows) - buf) if swing_lows else (sweep_candle["low"] - buf)
                     tp = ar.high
                 else:
-                    sl = sweep_candle["high"] + self.sl_buffer  # above sweep wick
+                    # Find highest swing high after CHoCH
+                    swing_highs = []
+                    highs = after_choch["high"].values
+                    for k in range(self.swing_bars, len(highs) - self.swing_bars):
+                        window = highs[k - self.swing_bars:k + self.swing_bars + 1]
+                        if highs[k] == window.max():
+                            swing_highs.append(highs[k])
+                    sl = (max(swing_highs) + buf) if swing_highs else (sweep_candle["high"] + buf)
                     tp = ar.low
 
                 sl_pips = abs(entry - sl) / 0.0001
