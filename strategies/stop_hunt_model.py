@@ -146,16 +146,59 @@ class StopHuntModel:
         self,
         last_n: int | None = 500,
         title: str | None = None,
-        height: int = 780,
+        height: int = 820,
     ) -> go.Figure:
-        """Plot 5min chart with all Stop Hunt signals."""
-        df   = self.df.iloc[-last_n:] if last_n else self.df
+        """Plot 5min chart with session zones and Stop Hunt signals."""
+        df    = self.df.iloc[-last_n:] if last_n else self.df
         title = title or f"{self.instrument} 5min — Stop Hunt Model"
         start_ts = df.index[0]
+        end_ts   = df.index[-1]
 
         fig = make_subplots(rows=1, cols=1)
 
-        # Candlesticks
+        # ── Session zone shading ──────────────────────────────────────────────
+        # Walk through each day and shade Asian KZ and NY Morning session
+        df_ny = df.copy()
+        df_ny.index = df_ny.index.tz_convert(NY_TZ)
+
+        dates_seen = set()
+        for ts in df_ny.index:
+            d = ts.date()
+            if d in dates_seen:
+                continue
+            dates_seen.add(d)
+
+            # Asian Kill Zone: 8PM-10PM NY
+            asian_start = pd.Timestamp(year=d.year, month=d.month, day=d.day,
+                                       hour=20, minute=0, tzinfo=NY_TZ).tz_convert("UTC")
+            asian_end   = pd.Timestamp(year=d.year, month=d.month, day=d.day,
+                                       hour=22, minute=0, tzinfo=NY_TZ).tz_convert("UTC")
+            if asian_start >= start_ts and asian_start <= end_ts:
+                fig.add_vrect(x0=asian_start, x1=asian_end,
+                    fillcolor="rgba(247,183,49,0.08)",
+                    layer="below", line_width=0,
+                    annotation_text="Asian KZ",
+                    annotation_position="top left",
+                    annotation_font=dict(size=9, color="#F7B731"),
+                )
+
+            # NY Morning session: 7AM-10AM NY (next day after Asian)
+            import datetime
+            next_d = d + datetime.timedelta(days=1)
+            ny_start = pd.Timestamp(year=next_d.year, month=next_d.month, day=next_d.day,
+                                    hour=7, minute=0, tzinfo=NY_TZ).tz_convert("UTC")
+            ny_end   = pd.Timestamp(year=next_d.year, month=next_d.month, day=next_d.day,
+                                    hour=10, minute=0, tzinfo=NY_TZ).tz_convert("UTC")
+            if ny_start >= start_ts and ny_start <= end_ts:
+                fig.add_vrect(x0=ny_start, x1=ny_end,
+                    fillcolor="rgba(69,170,242,0.06)",
+                    layer="below", line_width=0,
+                    annotation_text="NY Morning",
+                    annotation_position="top left",
+                    annotation_font=dict(size=9, color="#45AAF2"),
+                )
+
+        # ── Candlesticks ──────────────────────────────────────────────────────
         fig.add_trace(go.Candlestick(
             x=df.index,
             open=df["open"], high=df["high"],
@@ -168,90 +211,121 @@ class StopHuntModel:
             showlegend=False, name="OHLC",
         ))
 
-        # Asian ranges
+        # ── Asian range levels ────────────────────────────────────────────────
         for ar in self.asian_ranges:
             if ar.end_time < start_ts:
                 continue
-            # Asian range box
-            fig.add_shape(type="rect",
-                x0=ar.start_time, x1=df.index[-1],
-                y0=ar.low, y1=ar.high,
-                fillcolor="rgba(247,183,49,0.06)",
-                line=dict(color=self.COLOUR["asian"], width=1, dash="dot"),
+            fig.add_shape(type="line",
+                x0=ar.end_time, x1=end_ts,
+                y0=ar.high, y1=ar.high,
+                line=dict(color=self.COLOUR["asian"], width=1.5, dash="dot"),
             )
-            fig.add_annotation(
-                x=ar.start_time, y=ar.high,
+            fig.add_shape(type="line",
+                x0=ar.end_time, x1=end_ts,
+                y0=ar.low, y1=ar.low,
+                line=dict(color=self.COLOUR["asian"], width=1.5, dash="dot"),
+            )
+            fig.add_annotation(x=ar.end_time, y=ar.high,
                 text=f"Asian H {ar.high:.5f}",
-                font=dict(size=9, color=self.COLOUR["asian"]),
+                font=dict(size=10, color=self.COLOUR["asian"]),
                 showarrow=False, xanchor="left", yanchor="bottom",
-                bgcolor="rgba(15,17,23,0.7)", borderpad=2,
+                bgcolor="rgba(15,17,23,0.8)", borderpad=3,
+                bordercolor=self.COLOUR["asian"], borderwidth=1,
             )
-            fig.add_annotation(
-                x=ar.start_time, y=ar.low,
+            fig.add_annotation(x=ar.end_time, y=ar.low,
                 text=f"Asian L {ar.low:.5f}",
-                font=dict(size=9, color=self.COLOUR["asian"]),
+                font=dict(size=10, color=self.COLOUR["asian"]),
                 showarrow=False, xanchor="left", yanchor="top",
-                bgcolor="rgba(15,17,23,0.7)", borderpad=2,
+                bgcolor="rgba(15,17,23,0.8)", borderpad=3,
+                bordercolor=self.COLOUR["asian"], borderwidth=1,
             )
 
-        # Signals
+        # ── Signals ───────────────────────────────────────────────────────────
         for sig in self.signals:
             if sig.timestamp < start_ts or not sig.is_valid:
                 continue
             is_long = sig.direction == "long"
+            ec = self.COLOUR["up"] if is_long else self.COLOUR["down"]
 
             # BPR zone
             fig.add_shape(type="rect",
-                x0=sig.bpr.formed_at, x1=df.index[-1],
+                x0=sig.bpr.formed_at, x1=end_ts,
                 y0=sig.bpr.bottom, y1=sig.bpr.top,
-                fillcolor="rgba(247,183,49,0.15)",
-                line=dict(color=self.COLOUR["bpr"], width=1),
+                fillcolor="rgba(247,183,49,0.2)",
+                line=dict(color=self.COLOUR["bpr"], width=1.5),
+            )
+            fig.add_annotation(x=sig.bpr.formed_at, y=sig.bpr.top,
+                text="BPR",
+                font=dict(size=10, color=self.COLOUR["bpr"]),
+                showarrow=False, xanchor="left", yanchor="bottom",
+                bgcolor="rgba(15,17,23,0.8)", borderpad=2,
             )
 
             # Entry line
             fig.add_shape(type="line",
-                x0=sig.timestamp, x1=df.index[-1],
+                x0=sig.timestamp, x1=end_ts,
                 y0=sig.entry, y1=sig.entry,
-                line=dict(color=self.COLOUR["entry"], width=1.5),
+                line=dict(color=ec, width=2),
+            )
+            fig.add_annotation(x=end_ts, y=sig.entry,
+                text=f"ENTRY {sig.entry:.5f}",
+                font=dict(size=11, color=ec),
+                showarrow=False, xanchor="right",
+                yanchor="bottom" if is_long else "top",
+                bgcolor="rgba(15,17,23,0.85)", borderpad=3,
+                bordercolor=ec, borderwidth=1,
             )
 
             # SL line
             fig.add_shape(type="line",
-                x0=sig.timestamp, x1=df.index[-1],
+                x0=sig.timestamp, x1=end_ts,
                 y0=sig.sl, y1=sig.sl,
-                line=dict(color=self.COLOUR["sl"], width=1, dash="dash"),
+                line=dict(color=self.COLOUR["sl"], width=1.5, dash="dash"),
+            )
+            fig.add_annotation(x=end_ts, y=sig.sl,
+                text=f"SL {sig.sl:.5f} ({sig.sl_pips:.0f}p)",
+                font=dict(size=11, color=self.COLOUR["sl"]),
+                showarrow=False, xanchor="right",
+                yanchor="top" if is_long else "bottom",
+                bgcolor="rgba(15,17,23,0.85)", borderpad=3,
             )
 
             # TP line
             fig.add_shape(type="line",
-                x0=sig.timestamp, x1=df.index[-1],
+                x0=sig.timestamp, x1=end_ts,
                 y0=sig.tp, y1=sig.tp,
-                line=dict(color=self.COLOUR["tp"], width=1.5, dash="dash"),
+                line=dict(color=self.COLOUR["tp"], width=2, dash="dash"),
+            )
+            fig.add_annotation(x=end_ts, y=sig.tp,
+                text=f"TP {sig.tp:.5f} ({sig.tp_pips:.0f}p) RR:{sig.rr}",
+                font=dict(size=11, color=self.COLOUR["tp"]),
+                showarrow=False, xanchor="right",
+                yanchor="bottom" if is_long else "top",
+                bgcolor="rgba(15,17,23,0.85)", borderpad=3,
+            )
+
+            # Risk/reward zones
+            fig.add_shape(type="rect",
+                x0=sig.timestamp, x1=end_ts,
+                y0=min(sig.entry, sig.sl), y1=max(sig.entry, sig.sl),
+                fillcolor="rgba(252,92,101,0.08)", line=dict(width=0),
+            )
+            fig.add_shape(type="rect",
+                x0=sig.timestamp, x1=end_ts,
+                y0=min(sig.entry, sig.tp), y1=max(sig.entry, sig.tp),
+                fillcolor="rgba(38,222,129,0.06)", line=dict(width=0),
             )
 
             # Sweep marker
             fig.add_trace(go.Scatter(
-                x=[sig.sweep_time], y=[sig.sweep_price],
+                x=[sig.timestamp], y=[sig.entry],
                 mode="markers",
                 marker=dict(
-                    symbol="x", size=12,
-                    color=self.COLOUR["sweep"],
-                    line=dict(color=self.COLOUR["sweep"], width=2),
+                    symbol="triangle-up" if is_long else "triangle-down",
+                    size=16, color=ec,
+                    line=dict(color="white", width=2),
                 ),
-                name="Sweep", showlegend=False,
-                hovertemplate=f"<b>Sweep</b><br>{sig.sweep_price:.5f}<extra></extra>",
-            ))
-
-            # CHoCH marker
-            choch_price = df.loc[sig.choch_time, "close"] if sig.choch_time in df.index else sig.entry
-            fig.add_trace(go.Scatter(
-                x=[sig.choch_time], y=[choch_price],
-                mode="markers+text",
-                marker=dict(symbol="diamond", size=10, color=self.COLOUR["choch"]),
-                text=["CHoCH"],
-                textposition="top center" if is_long else "bottom center",
-                textfont=dict(size=9, color=self.COLOUR["choch"]),
-                name="CHoCH", showlegend=False,
+                showlegend=False,
             ))
 
             # Entry marker
