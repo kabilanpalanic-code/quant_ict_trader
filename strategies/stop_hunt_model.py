@@ -337,10 +337,16 @@ class StopHuntModel:
     def _process_range(self, ar: AsianRange) -> None:
         df = self.df
 
-        # Only look at bars within same trading day (max 200 bars = ~16 hours on 5min)
+        # Search window: Asian close to 10 AM NY (end of NY Morning session)
+        # After 10 AM NY → no trade for this day
+        ny_morning_end = ar.end_time.astimezone(NY_TZ).replace(
+            hour=10, minute=0, second=0, microsecond=0
+        )
+        ny_morning_end_utc = pd.Timestamp(ny_morning_end).tz_convert("UTC")
+
         after_asian = df[
             (df.index > ar.end_time) &
-            (df.index <= ar.end_time + pd.Timedelta(hours=16))
+            (df.index <= ny_morning_end_utc)
         ]
         if len(after_asian) < 10:
             return
