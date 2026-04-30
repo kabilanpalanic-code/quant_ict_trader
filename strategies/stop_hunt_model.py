@@ -335,70 +335,55 @@ class StopHuntModel:
             self._process_range(ar)
 
     def _process_range(self, ar: AsianRange) -> None:
-        """
-        For a given Asian range, look for:
-        1. Sweep of high or low (close beyond)
-        2. First CHoCH after sweep
-        3. BPR after CHoCH
-        4. Generate signal
-        """
         df = self.df
 
-        # Only bars AFTER Asian Kill Zone ends
-        after_asian = df[df.index > ar.end_time]
+        # Only look at bars within same trading day (max 200 bars = ~16 hours on 5min)
+        after_asian = df[
+            (df.index > ar.end_time) &
+            (df.index <= ar.end_time + pd.Timedelta(hours=16))
+        ]
         if len(after_asian) < 10:
             return
 
         highs  = after_asian["high"].values
         lows   = after_asian["low"].values
         closes = after_asian["close"].values
-        idx    = after_asian.index
 
-        sweep_found    = False
-        sweep_dir: Literal["high", "low"] | None = None
-        sweep_price    = 0.0
-        sweep_time     = None
-        sweep_bar      = 0
-
-        choch_found    = False
-        choch_time     = None
-        choch_bar      = 0
-        choch_used     = False  # only first CHoCH
+        sweep_found = False
+        sweep_dir   = None
+        sweep_price = 0.0
+        sweep_time  = None
+        sweep_bar   = 0
+        choch_found = False
+        choch_time  = None
+        choch_bar   = 0
 
         for i, (bar_time, row) in enumerate(after_asian.iterrows()):
-            # ── Step 1: Detect sweep ──────────────────────────────────────────
+            # Step 1: Sweep
             if not sweep_found:
-                # Sweep of Asian High — close above it
                 if row["close"] > ar.high:
                     sweep_found = True
                     sweep_dir   = "high"
-                    sweep_price = highs[i]  # wick extreme
+                    sweep_price = highs[i]
                     sweep_time  = bar_time
                     sweep_bar   = i
-
-                # Sweep of Asian Low — close below it
                 elif row["close"] < ar.low:
                     sweep_found = True
                     sweep_dir   = "low"
-                    sweep_price = lows[i]   # wick extreme
+                    sweep_price = lows[i]
                     sweep_time  = bar_time
                     sweep_bar   = i
                 continue
 
-            # ── Step 2: Detect FIRST CHoCH after sweep ────────────────────────
-            if sweep_found and not choch_found and not choch_used:
+            # Step 2: First CHoCH
+            if not choch_found:
                 if sweep_dir == "high":
-                    # After sweeping high → expect bearish CHoCH
-                    # CHoCH = close breaks below most recent swing low
                     recent_low = self._recent_swing_low(after_asian, i, lookback=20)
                     if recent_low and row["close"] < recent_low:
                         choch_found = True
                         choch_time  = bar_time
                         choch_bar   = i
-
                 elif sweep_dir == "low":
-                    # After sweeping low → expect bullish CHoCH
-                    # CHoCH = close breaks above most recent swing high
                     recent_high = self._recent_swing_high(after_asian, i, lookback=20)
                     if recent_high and row["close"] > recent_high:
                         choch_found = True
@@ -406,51 +391,41 @@ class StopHuntModel:
                         choch_bar   = i
                 continue
 
-            # ── Step 3: Look for BPR after CHoCH ─────────────────────────────
-            if choch_found and not choch_used:
-                # Slice data from CHoCH onwards for BPR detection
-                df_since_choch = after_asian.iloc[choch_bar:]
-                if len(df_since_choch) < 5:
-                    continue
+            # Step 3: BPR — run ONCE on slice after CHoCH (max 50 bars)
+            if choch_found:
+                end_bar   = min(choch_bar + 50, len(after_asian))
+                df_window = after_asian.iloc[choch_bar:end_bar]
+                bprs      = detect_bprs(df_window, self.min_bpr_pips)
 
-                bprs = detect_bprs(df_since_choch, self.min_bpr_pips)
-
-                # Find BPR in correct direction
+                current_price = row["close"]
                 valid_bprs = []
                 for bpr in bprs:
                     if bpr.filled:
                         continue
-                    # For long (swept low) → BPR should be below current price
-                    if sweep_dir == "low" and bpr.midpoint < row["close"]:
+                    if sweep_dir == "low" and bpr.midpoint < current_price:
                         valid_bprs.append(bpr)
-                    # For short (swept high) → BPR should be above current price
-                    elif sweep_dir == "high" and bpr.midpoint > row["close"]:
+                    elif sweep_dir == "high" and bpr.midpoint > current_price:
                         valid_bprs.append(bpr)
 
                 if not valid_bprs:
-                    continue
+                    return  # no BPR — skip this range
 
-                # Use the most recently formed BPR
                 bpr = sorted(valid_bprs, key=lambda b: b.formed_at)[-1]
-
-                # ── Step 4: Build signal ──────────────────────────────────────
-                direction: Literal["long", "short"] = (
-                    "long" if sweep_dir == "low" else "short"
-                )
-                entry = bpr.midpoint
+                direction = "long" if sweep_dir == "low" else "short"
+                entry     = bpr.midpoint
 
                 if direction == "long":
-                    sl = sweep_price - self.sl_buffer   # below sweep wick
-                    tp = ar.high                         # opposite Asian level
+                    sl = sweep_price - self.sl_buffer
+                    tp = ar.high
                 else:
-                    sl = sweep_price + self.sl_buffer   # above sweep wick
-                    tp = ar.low                          # opposite Asian level
+                    sl = sweep_price + self.sl_buffer
+                    tp = ar.low
 
                 sl_pips = abs(entry - sl) / 0.0001
                 tp_pips = abs(entry - tp) / 0.0001
                 rr      = tp_pips / sl_pips if sl_pips > 0 else 0
 
-                signal = StopHuntSignal(
+                self.signals.append(StopHuntSignal(
                     timestamp   = bar_time,
                     direction   = direction,
                     instrument  = self.instrument,
@@ -465,11 +440,8 @@ class StopHuntModel:
                     sl_pips     = round(sl_pips, 1),
                     tp_pips     = round(tp_pips, 1),
                     rr          = round(rr, 2),
-                )
-
-                self.signals.append(signal)
-                choch_used = True  # only first CHoCH counts
-                break              # one signal per Asian range
+                ))
+                return  # one signal per Asian range
 
     def _recent_swing_high(
         self,
