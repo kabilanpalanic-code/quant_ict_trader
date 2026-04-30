@@ -402,24 +402,28 @@ class StopHuntModel:
                 for bpr in bprs:
                     if bpr.filled:
                         continue
-                    if sweep_dir == "low" and bpr.midpoint < current_price:
+                    # Long (swept low) → BPR must be ABOVE sweep wick
+                    # price pulls back UP into BPR after CHoCH
+                    if sweep_dir == "low" and bpr.midpoint > sweep_price:
                         valid_bprs.append(bpr)
-                    elif sweep_dir == "high" and bpr.midpoint > current_price:
+                    # Short (swept high) → BPR must be BELOW sweep wick
+                    # price pulls back DOWN into BPR after CHoCH
+                    elif sweep_dir == "high" and bpr.midpoint < sweep_price:
                         valid_bprs.append(bpr)
 
                 if not valid_bprs:
-                    return  # no BPR — skip this range
+                    return
 
                 bpr = sorted(valid_bprs, key=lambda b: b.formed_at)[-1]
                 direction = "long" if sweep_dir == "low" else "short"
                 entry     = bpr.midpoint
 
                 if direction == "long":
-                    sl = sweep_price - self.sl_buffer
-                    tp = ar.high
+                    sl = sweep_price - self.sl_buffer   # BELOW sweep wick
+                    tp = ar.high                         # opposite Asian level
                 else:
-                    sl = sweep_price + self.sl_buffer
-                    tp = ar.low
+                    sl = sweep_price + self.sl_buffer   # ABOVE sweep wick
+                    tp = ar.low                          # opposite Asian level
 
                 sl_pips = abs(entry - sl) / 0.0001
                 tp_pips = abs(entry - tp) / 0.0001
