@@ -500,13 +500,15 @@ class StopHuntModel:
                     if bpr.filled:
                         continue
                     # Long (swept low) → BPR must be ABOVE sweep wick
-                    # price pulls back UP into BPR after CHoCH
-                    if sweep_dir == "low" and bpr.midpoint > sweep_price:
-                        valid_bprs.append(bpr)
+                    # AND below or at Asian Low (pullback into value zone)
+                    if sweep_dir == "low":
+                        if bpr.midpoint > sweep_price and bpr.midpoint <= ar.low:
+                            valid_bprs.append(bpr)
                     # Short (swept high) → BPR must be BELOW sweep wick
-                    # price pulls back DOWN into BPR after CHoCH
-                    elif sweep_dir == "high" and bpr.midpoint < sweep_price:
-                        valid_bprs.append(bpr)
+                    # AND above or at Asian High (pullback into value zone)
+                    elif sweep_dir == "high":
+                        if bpr.midpoint < sweep_price and bpr.midpoint >= ar.high:
+                            valid_bprs.append(bpr)
 
                 if not valid_bprs:
                     return
@@ -515,12 +517,15 @@ class StopHuntModel:
                 direction = "long" if sweep_dir == "low" else "short"
                 entry     = bpr.midpoint
 
+                # SL = beyond the FULL sweep candle wick + buffer
+                # Use the extreme wick of the sweep candle, not just close
+                sweep_candle = after_asian.iloc[sweep_bar]
                 if direction == "long":
-                    sl = sweep_price - self.sl_buffer   # BELOW sweep wick
-                    tp = ar.high                         # opposite Asian level
+                    sl = sweep_candle["low"] - self.sl_buffer   # below sweep wick
+                    tp = ar.high
                 else:
-                    sl = sweep_price + self.sl_buffer   # ABOVE sweep wick
-                    tp = ar.low                          # opposite Asian level
+                    sl = sweep_candle["high"] + self.sl_buffer  # above sweep wick
+                    tp = ar.low
 
                 sl_pips = abs(entry - sl) / 0.0001
                 tp_pips = abs(entry - tp) / 0.0001
