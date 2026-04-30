@@ -363,35 +363,35 @@ class StopHuntModel:
         if choch_bar is None:
             return
 
-        # ── Step 3: Find entry zone (BPR or FVG) in correct location ──────────
+        # ── Step 3: Find entry zone (BPR or FVG) AFTER CHoCH ─────────────────
         # SHORT: BEARISH FVG/BPR ABOVE Asian High
         # LONG:  BULLISH FVG/BPR BELOW Asian Low
-        zone       = None
-        zone_type  = None
-        min_gap    = self.min_zone_pips * 0.0001
+        # Zone must form AFTER CHoCH — not before
+        after_choch_window = after_sweep.iloc[choch_bar:]
+        if len(after_choch_window) < 3:
+            return
 
-        # Try BPR first (stronger signal)
-        # BPR must contain the correct FVG direction
-        bprs = detect_bprs(after, min_gap)
+        zone      = None
+        zone_type = None
+        min_gap   = self.min_zone_pips * 0.0001
+
+        # Try BPR first
+        bprs = detect_bprs(after_choch_window, min_gap)
         for bpr in bprs:
             if sweep_dir == "high":
-                # SHORT → BPR must be above Asian High AND contain bearish FVG
-                if (bpr.midpoint >= ar.high and
-                        bpr.bearish_fvg.top >= ar.high):
+                if bpr.midpoint >= ar.high and bpr.bearish_fvg.top >= ar.high:
                     zone      = (bpr.bottom, bpr.top)
                     zone_type = "BPR"
                     break
             elif sweep_dir == "low":
-                # LONG → BPR must be below Asian Low AND contain bullish FVG
-                if (bpr.midpoint <= ar.low and
-                        bpr.bullish_fvg.bottom <= ar.low):
+                if bpr.midpoint <= ar.low and bpr.bullish_fvg.bottom <= ar.low:
                     zone      = (bpr.bottom, bpr.top)
                     zone_type = "BPR"
                     break
 
-        # Fallback to single FVG if no valid BPR
+        # Fallback to single FVG
         if zone is None:
-            fvgs = detect_fvgs(after, min_gap)
+            fvgs = detect_fvgs(after_choch_window, min_gap)
             for fvg in fvgs:
                 mid = (fvg.top + fvg.bottom) / 2
                 if sweep_dir == "high" and fvg.kind == "bearish" and mid >= ar.high:
