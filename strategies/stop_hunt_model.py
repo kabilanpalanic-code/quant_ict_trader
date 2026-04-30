@@ -212,16 +212,25 @@ class StopHuntModel:
         ))
 
         # ── Asian range levels ────────────────────────────────────────────────
-        for ar in self.asian_ranges:
+        for idx_ar, ar in enumerate(self.asian_ranges):
             if ar.end_time < start_ts:
                 continue
+
+            # Line ends at next Asian KZ start or chart end
+            next_asian_start = end_ts
+            if idx_ar + 1 < len(self.asian_ranges):
+                next_asian_start = min(
+                    self.asian_ranges[idx_ar + 1].start_time,
+                    end_ts
+                )
+
             fig.add_shape(type="line",
-                x0=ar.end_time, x1=end_ts,
+                x0=ar.end_time, x1=next_asian_start,
                 y0=ar.high, y1=ar.high,
                 line=dict(color=self.COLOUR["asian"], width=1.5, dash="dot"),
             )
             fig.add_shape(type="line",
-                x0=ar.end_time, x1=end_ts,
+                x0=ar.end_time, x1=next_asian_start,
                 y0=ar.low, y1=ar.low,
                 line=dict(color=self.COLOUR["asian"], width=1.5, dash="dot"),
             )
@@ -247,9 +256,14 @@ class StopHuntModel:
             is_long = sig.direction == "long"
             ec = self.COLOUR["up"] if is_long else self.COLOUR["down"]
 
+            # Signal expires at next Asian KZ start
+            next_ar = next((a for a in self.asian_ranges
+                           if a.start_time > sig.asian_range.start_time), None)
+            sig_end = next_ar.start_time if next_ar and next_ar.start_time <= end_ts else end_ts
+
             # BPR zone
             fig.add_shape(type="rect",
-                x0=sig.bpr.formed_at, x1=end_ts,
+                x0=sig.bpr.formed_at, x1=sig_end,
                 y0=sig.bpr.bottom, y1=sig.bpr.top,
                 fillcolor="rgba(247,183,49,0.2)",
                 line=dict(color=self.COLOUR["bpr"], width=1.5),
@@ -263,11 +277,11 @@ class StopHuntModel:
 
             # Entry line
             fig.add_shape(type="line",
-                x0=sig.timestamp, x1=end_ts,
+                x0=sig.timestamp, x1=sig_end,
                 y0=sig.entry, y1=sig.entry,
                 line=dict(color=ec, width=2),
             )
-            fig.add_annotation(x=end_ts, y=sig.entry,
+            fig.add_annotation(x=sig_end, y=sig.entry,
                 text=f"ENTRY {sig.entry:.5f}",
                 font=dict(size=11, color=ec),
                 showarrow=False, xanchor="right",
@@ -278,11 +292,11 @@ class StopHuntModel:
 
             # SL line
             fig.add_shape(type="line",
-                x0=sig.timestamp, x1=end_ts,
+                x0=sig.timestamp, x1=sig_end,
                 y0=sig.sl, y1=sig.sl,
                 line=dict(color=self.COLOUR["sl"], width=1.5, dash="dash"),
             )
-            fig.add_annotation(x=end_ts, y=sig.sl,
+            fig.add_annotation(x=sig_end, y=sig.sl,
                 text=f"SL {sig.sl:.5f} ({sig.sl_pips:.0f}p)",
                 font=dict(size=11, color=self.COLOUR["sl"]),
                 showarrow=False, xanchor="right",
@@ -292,11 +306,11 @@ class StopHuntModel:
 
             # TP line
             fig.add_shape(type="line",
-                x0=sig.timestamp, x1=end_ts,
+                x0=sig.timestamp, x1=sig_end,
                 y0=sig.tp, y1=sig.tp,
                 line=dict(color=self.COLOUR["tp"], width=2, dash="dash"),
             )
-            fig.add_annotation(x=end_ts, y=sig.tp,
+            fig.add_annotation(x=sig_end, y=sig.tp,
                 text=f"TP {sig.tp:.5f} ({sig.tp_pips:.0f}p) RR:{sig.rr}",
                 font=dict(size=11, color=self.COLOUR["tp"]),
                 showarrow=False, xanchor="right",
@@ -306,12 +320,12 @@ class StopHuntModel:
 
             # Risk/reward zones
             fig.add_shape(type="rect",
-                x0=sig.timestamp, x1=end_ts,
+                x0=sig.timestamp, x1=sig_end,
                 y0=min(sig.entry, sig.sl), y1=max(sig.entry, sig.sl),
                 fillcolor="rgba(252,92,101,0.08)", line=dict(width=0),
             )
             fig.add_shape(type="rect",
-                x0=sig.timestamp, x1=end_ts,
+                x0=sig.timestamp, x1=sig_end,
                 y0=min(sig.entry, sig.tp), y1=max(sig.entry, sig.tp),
                 fillcolor="rgba(38,222,129,0.06)", line=dict(width=0),
             )
