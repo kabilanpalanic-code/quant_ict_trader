@@ -337,12 +337,15 @@ class StopHuntModel:
     def _process_range(self, ar: AsianRange) -> None:
         df = self.df
 
-        # Search window: Asian close to 10 AM NY (end of NY Morning session)
-        # After 10 AM NY → no trade for this day
-        ny_morning_end = ar.end_time.astimezone(NY_TZ).replace(
-            hour=10, minute=0, second=0, microsecond=0
+        # Search window: Asian close to 10 AM NY NEXT DAY (end of NY Morning session)
+        # Asian ends 10 PM NY → next day 10 AM NY = 12 hours window
+        ar_end_ny = ar.end_time.astimezone(NY_TZ)
+        next_day  = ar_end_ny.date() + pd.Timedelta(days=1)
+        ny_morning_end = pd.Timestamp(
+            year=next_day.year, month=next_day.month, day=next_day.day,
+            hour=10, minute=0, tzinfo=NY_TZ
         )
-        ny_morning_end_utc = pd.Timestamp(ny_morning_end).tz_convert("UTC")
+        ny_morning_end_utc = ny_morning_end.tz_convert("UTC")
 
         after_asian = df[
             (df.index > ar.end_time) &
