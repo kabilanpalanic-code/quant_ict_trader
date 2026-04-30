@@ -499,16 +499,12 @@ class StopHuntModel:
                 for bpr in bprs:
                     if bpr.filled:
                         continue
-                    # Long (swept low) → BPR must be ABOVE sweep wick
-                    # AND below or at Asian Low (pullback into value zone)
-                    if sweep_dir == "low":
-                        if bpr.midpoint > sweep_price and bpr.midpoint <= ar.low:
-                            valid_bprs.append(bpr)
-                    # Short (swept high) → BPR must be BELOW sweep wick
-                    # AND above or at Asian High (pullback into value zone)
-                    elif sweep_dir == "high":
-                        if bpr.midpoint < sweep_price and bpr.midpoint >= ar.high:
-                            valid_bprs.append(bpr)
+                    # Short (swept high) → BPR must be above or at Asian High
+                    if sweep_dir == "high" and bpr.midpoint >= ar.high:
+                        valid_bprs.append(bpr)
+                    # Long (swept low) → BPR must be below or at Asian Low
+                    elif sweep_dir == "low" and bpr.midpoint <= ar.low:
+                        valid_bprs.append(bpr)
 
                 if not valid_bprs:
                     return
