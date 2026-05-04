@@ -371,64 +371,21 @@ class Backtest:
                     if sl_pips < self.min_sl_pips: continue
                     if sl_pips > self.max_sl_pips: continue
 
-                    # TP levels — OB first, then liquidity, then fixed RR fallback
-                    liq = Liquidity(df_ltf_slice, self.swing_lookback)
-                    max_tp1_dist = sl_dist * 2.0
-                    max_tp2_dist = sl_dist * 3.0   # TP2 max 3x SL distance
-
-                    # Get opposing OBs for TP1
-                    obs = ms_ltf.order_blocks
-
+                    # Fixed RR — simple and consistent
                     if direction == "long":
-                        # TP1 — nearest bearish OB above entry within 2x SL
-                        ob_tp1 = sorted([
-                            (ob.low + ob.high) / 2 for ob in obs
-                            if not ob.mitigated
-                            and ob.kind == "bearish"
-                            and ob.low > entry
-                            and ob.low - entry <= max_tp1_dist
-                        ])
-                        tp1 = ob_tp1[0] if ob_tp1 else entry + sl_dist * min(self.tp1_rr, 1.5)
+                        tp1 = entry + sl_dist * self.tp1_rr
+                        tp2 = entry + sl_dist * self.tp2_rr
+                    else:
+                        tp1 = entry - sl_dist * self.tp1_rr
+                        tp2 = entry - sl_dist * self.tp2_rr
 
-                        # TP2 — nearest EQH above TP1 within 3x SL
-                        liq_tp2 = sorted([
-                            eq.price for eq in liq.active_buyside()
-                            if eq.price > tp1
-                            and eq.price - entry <= max_tp2_dist
-                        ])
-                        tp2 = liq_tp2[0] if liq_tp2 else entry + sl_dist * min(self.tp2_rr, 2.0)
-
-                    else:  # short
-                        # TP1 — nearest bullish OB below entry within 2x SL
-                        ob_tp1 = sorted([
-                            (ob.low + ob.high) / 2 for ob in obs
-                            if not ob.mitigated
-                            and ob.kind == "bullish"
-                            and ob.high < entry
-                            and entry - ob.high <= max_tp1_dist
-                        ], reverse=True)
-                        tp1 = ob_tp1[0] if ob_tp1 else entry - sl_dist * min(self.tp1_rr, 1.5)
-
-                        # TP2 — nearest EQL below TP1 within 3x SL
-                        liq_tp2 = sorted([
-                            eq.price for eq in liq.active_sellside()
-                            if eq.price < tp1
-                            and entry - eq.price <= max_tp2_dist
-                        ], reverse=True)
-                        tp2 = liq_tp2[0] if liq_tp2 else entry - sl_dist * min(self.tp2_rr, 2.0)
-
-                    # Ensure TP1 and TP2 are at least 10 pips apart
-                    min_gap = 0.0010
-                    if abs(tp2 - tp1) < min_gap:
-                        tp2 = tp1 + min_gap if direction == "long" else tp1 - min_gap
-
-                    rr_tp1 = abs(tp1 - entry) / sl_dist if sl_dist > 0 else 0
-                    rr_tp2 = abs(tp2 - entry) / sl_dist if sl_dist > 0 else 0
+                    rr_tp1 = self.tp1_rr
+                    rr_tp2 = self.tp2_rr
 
                     if rr_tp2 < self.min_rr: continue
 
-                    risk_amt  = self.balance * self.risk_pct
-                    pos_size  = round(risk_amt / (sl_pips * self.pip_value), 2)
+                    risk_amt = self.balance * self.risk_pct
+                    pos_size = round(risk_amt / (sl_pips * self.pip_value), 2)
                     if pos_size <= 0: continue
 
                     bt_signals.append((entry, swing_sl, tp1, tp2, sl_pips, pos_size, risk_amt, rr_tp1, rr_tp2))

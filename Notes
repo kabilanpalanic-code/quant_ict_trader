@@ -12,9 +12,10 @@ I am building a professional ICT algo trading system in Python.
 Repo: https://github.com/kabilanpalanic-code/quant_ict_trader
 Stack: Python 3.12, uv, vectorbt, yfinance, MetaTrader5, plotly
 Trading: EURUSD, 1H/4H, Price Action + ICT concepts
-Task: build strategies/market_structure.py
+Jupyter Lab is working for charts.
+Next task: build strategies/market_structure.py
 - Swing high/low detection
-- BOS and CHoCH identification  
+- BOS and CHoCH identification
 - Order Block marking
-- Interactive Plotly chart output
+- Plot on interactive chart in Jupyter Lab
 Act as my Claude Expert and Algo Expert mentor.
